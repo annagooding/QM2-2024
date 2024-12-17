@@ -1,0 +1,526 @@
+Difference in Differences
+Workshop 08 Open In Colab
+Aims:
+This workshop builds on last week's material, replicating analysis in published academic research on the relationship between minimum wages and unemployment.
+
+As always we'll start by importing the libraries I need
+
+
+[ ]
+#!pip install linearmodels
+import pandas as pd
+import seaborn as sns
+import numpy as np
+import plotly
+import plotly.express as px
+import warnings
+from statsmodels.formula.api import ols
+from statsmodels.iolib.summary2 import summary_col
+import matplotlib.pyplot as plt
+
+warnings.filterwarnings('ignore')
+sns.set(font_scale=1.5)
+sns.set_style("white")
+plt.rcParams['figure.figsize'] = (12, 8)
+Panel Regression
+Surveys indicate that "jobs" are consistently one of the most important issues among voters in U.S. presidential elections, and that Republicans are typically perceived as better in handling the economy than Democrats. An article in NBC claims that "analysis of unemployment and voting data found that the president’s share of the vote held steady or increased in each of the 20 counties with the highest rise in unemployment from September 2019 to September 2020. And his vote share improved by 1 percentage point or more in 70 of the 100 hardest-hit counties." Let's look into this.
+
+Data Collection
+There are only 50 states in the U.S. but there are over 3000 counties-- this allows us to increase our sample size and perform a more fine-grained analysis. This is particularly important if we're interested in investigating the relationship between unemployment and voting behaviour, because of the urban-rural divide. For example, with in the state of New York there are probably vast differences in social and economic factors relevant to voting behaviour between Manhattan and very rural areas; this variation is lost when we look at aggregate state-level resutls, but visible when we look at the county-level. As such, in addition to the datasets we've just imported, we're going to be downloading county-level unemployment data straight from the BLS using the loop below.
+
+
+[ ]
+counties=pd.read_csv('https://storage.googleapis.com/qm2/wk10/county_labor.csv', converters={'county_fips': str})
+counties.head()
+
+Next steps:
+Part of the cleaning process in the cell above involves the creation of a column called "county_fips"-- this stands for Federal Information Processing System. This is a code that uniquely identifies states and counties in the U.S. A two digit FIPS code identifies states (e.g. 01: Alabama, 02: Alaska, etc.) and a five digit fips code identifies counties (e.g. 010001: Atauga County, Alabama; 02068: Denali Borough, Alaska). Notice, the first two digits of the five-digit county FIPS code indicates the state. Boring, yes, but these codes are imperative in allowing us to join county- and state- level datasets from different sources quicky and easily. Imagine what a nightmare it would be to try to join them using the names of the counties, having to deal with capitalizations, punctuation, etc. Yikes.
+
+Maps
+Great-- we've now got clean, county-level unemployment and population data spanning from 1990-2022 on an annual basis. Lets make a map to explore the spatial distribution of unemployment across time in the U.S. In order to do that, we're going to need a spatial file that tells us the shapes of the counties; I've imported it as a variable called county_polygons. We're then going to create an map using the Plotly library, which is great for making pretty, interactive maps and plots. It will have a slider on the bottom that lets us view unemployment in different years. It's doing quite a bit under the hood so it will take some time to plot. Be patient.
+
+
+[ ]
+import json
+!mkdir data
+!mkdir data/wk10/
+!curl https://storage.googleapis.com/qm2/wk10/geojson-counties-fips.json -o data/wk10/geojson-counties-fips.json
+
+county_polygons = json.load(open("data/wk10/geojson-counties-fips.json"))
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+100 3141k  100 3141k    0     0  9190k      0 --:--:-- --:--:-- --:--:-- 9212k
+
+[ ]
+plot_sample=counties[counties['year']>2007] # subset the data to only include years after 2007 -- it would take too long to plot all of the data
+
+px.choropleth( # plot a choropleth map using the plotly express (px) library
+                plot_sample, # load the dataframe
+                locations='county_fips', # set the location column to the state code
+                geojson=county_polygons, # set the location mode to USA states (you could add your own custom geojson/spatial file here)
+                scope='usa', # set the scope to the USA, so that it only plots the states
+                color="unemployment", # set the color of the states to correspond to the unemployment rate
+                animation_frame=plot_sample["year"].astype(str), # set the animation frame to the date, creating a slider at the bottom of the map
+                color_continuous_scale=px.colors.sequential.Viridis, # set the color scale to Viridis, a commonly used color scale
+                range_color=[0, 10], # set the range of the color scale to 0-10
+                height=1000) # set the height of the map to 1000 pixels
+
+This map is interactive-- meaning you can zoom in, pan around, and hover over it to get further information on the unemployment level in each county. You can also use the slider at the bottom to toggle between different years; if you move the slider from 2008 to 2009, you'll see lots of yellow suddenly appearing. A similar thing happens between 2019 and 2020. What's going on? Play around with this map for a second, and make note of spatial and temporal trends in unemployment. Temporally: after the 2008 crisis unemployment drastically increased across the whole of the US, then until 2019 it steadily decreased, due to the pandemic unemployment shot up again in 2020 as millions lost their jobs. Spacially: the central vertical section of the country appears to be the least affected by the unemployment trends across the rest of the US
+
+Now we're going to do the same thing for the elections data, which I've taken the liberty of cleaning. Let's load it up as a dataframe called elections, and make another map in which we plot vote shares in various elections such that red shows republican support, and blue shows democratic support.
+
+
+[ ]
+elections=pd.read_csv('https://storage.googleapis.com/qm2/wk10/elections.csv',converters={'county_fips': str})
+px.choropleth(
+                elections,
+                locations='county_fips',
+                geojson=county_polygons,
+                scope='usa',
+                color="r_votes",
+                animation_frame=elections["year"].astype(str),
+                color_continuous_scale=px.colors.diverging.balance,
+                range_color=[20, 80],
+                height=1000)
+
+Explore the map above. What do you notice about republican vote share, particularly as it relates to the previous map of unemployment? From these graphs you cannot tell a direct link, however the general trend seems to show increasing support for the republicans as unemployment is decreasing and Obama's term comes to an end. The share of republican voters increases steadily until 2020 when Trump is elected. Rural America remains consistently more republican than cities on the coast.
+
+Now we've got two datasets-- one on unemployment and another on election results. We want to merge them but CAREFUL: each row corresponds to the value of a variable x in county i and time t (so, xit); for example, the value in the first row of our dataset under the unemployment column would be unemployment01001,2000; i.e., the unemployment rate in Atauga County, Alabama (FIPS code 01001), in the year 2000. When our data has this structure (xit), we call it panel data. It must be handled differently from cross sectional data (xi), from merging to estimation.
+
+We can't just merge on i or t, we need to merge on both. We can do so as follows:
+
+
+[ ]
+df_c=pd.merge(elections,counties, on=['county_fips','year'])
+df_c.head()
+
+Next steps:
+Exercise
+OK. Our data is clean and ready for analysis. Because we're going to be investigating the relationship between unempoyment rates and republican voteshare via a regression model, we're going to need to follow the four steps of regression modeling from last week.
+
+First, formulate a research question (complete with null and alternative hypothesis), and then follow these steps for our dataset, df_c (bonus points if you account for the influence of population).
+
+Summary Statistics
+Table of Summary Statistics
+Visualisation
+Exploratory Plots
+Assumptions
+A. Independence
+B. Heteroscedasticity: Regression plots + Q-Q plot
+C. Multicollinearity: VIF + Correlation Matrix
+Regression
+Regression Table
+For the moment, when you run the regression, ignore the fact that we have panel data and just run a regular regression of the form
+Y=β0+β1X+ϵ
+
+H0: In 2020 unemployment rates did not affect the republican vote share between counties
+Ha: The unemployment rate did affect the republican vote share
+
+
+[ ]
+#summary statistics across states for 2020
+df_2020 = df_c[df_c['year'] == 2020]
+
+summary_stats = df_2020.describe()
+display(summary_stats)
+
+
+Next steps:
+
+[ ]
+#exploratory plots 
+sns.scatterplot(x='unemployment', y='r_votes', data=df_2020)
+plt.title('Unemployment vs. Republican Votes (2020)')
+plt.show()
+
+
+[ ]
+#regression
+
+model= ols('r_votes ~  unemployment+population', data=df_2020).fit() # fit the model
+print(model.summary()) # print the summary
+                            OLS Regression Results                            
+==============================================================================
+Dep. Variable:                r_votes   R-squared:                       0.229
+Model:                            OLS   Adj. R-squared:                  0.229
+Method:                 Least Squares   F-statistic:                     462.3
+Date:                Tue, 17 Dec 2024   Prob (F-statistic):          1.69e-176
+Time:                        18:38:23   Log-Likelihood:                -12698.
+No. Observations:                3114   AIC:                         2.540e+04
+Df Residuals:                    3111   BIC:                         2.542e+04
+Df Model:                           2                                         
+Covariance Type:            nonrobust                                         
+================================================================================
+                   coef    std err          t      P>|t|      [0.025      0.975]
+--------------------------------------------------------------------------------
+Intercept       81.7715      0.803    101.877      0.000      80.198      83.345
+unemployment    -2.3225      0.115    -20.265      0.000      -2.547      -2.098
+population      -0.0290      0.002    -18.608      0.000      -0.032      -0.026
+==============================================================================
+Omnibus:                      229.792   Durbin-Watson:                   1.308
+Prob(Omnibus):                  0.000   Jarque-Bera (JB):              493.482
+Skew:                          -0.478   Prob(JB):                    6.95e-108
+Kurtosis:                       4.700   Cond. No.                         554.
+==============================================================================
+
+Notes:
+[1] Standard Errors assume that the covariance matrix of the errors is correctly specified.
+Accounting for Space and Time
+If you've done things correctly, you'll notice two things. First, the appears to be a generally negative relationship between unemployment and republican voteshare; in other words, places with higher unemployment tend to vote against republicans. Second, we've egregiously violated the independence assumption. We have repeat observations of the same individuals (counties) over time. As such, this result may be biased unless we account for space and time.
+
+As we saw in the lecture, panel data actually contains two sources of variation: differences between individuals (in this case, counties), and within individuials. So, a simple research question such as "Does unemployment increase republican voteshare" is actually two different questions:
+
+Does a higher level of unemployment lead to higher republican vote shares between counties?
+Does an increase in the unemployment rate over time lead to an increase in republican vote shares within counties?
+Neither is more important than the other, but we must be careful not to conflate them as they are very different questions. A straighforward way of answering the first question would be to get rid of the time dimension in our data by running a separate regression for each year:
+
+
+[ ]
+models=[] # create empty list to store the models
+names=[] # create empty list to store the names of the models
+years=df_c['year'].unique()
+
+for year in years: # loop through years from 2000 to 2020 in increments of 4
+    election=df_c[df_c['year']==year] # subset the data to only include the year of interest
+    model= ols('r_votes ~ unemployment + population', data=election).fit() # run a regression of the republican vote share on the unemployment rate
+    models.append(model) # append the model to the list of models
+    names.append(str(year)) # append the name of the model to the list of names
+
+table=summary_col( # create a regression table
+    models, # pass the models to the summary_col function
+    stars=True, # add stars denoting the p-values of the coefficient to the table; * p<0.05, ** p<0.01, *** p<0.001
+    float_format='%0.3f', # set the decimal places to 3
+    model_names=names, # set the names of the model
+    info_dict = {"N":lambda x: "{0:d}".format(int(x.nobs))}) # add the number of observations to the table
+
+print(table) # print the table
+
+======================================================
+                  2008      2012      2016      2020  
+------------------------------------------------------
+Intercept      68.971*** 73.383*** 70.706*** 81.771***
+               (0.680)   (0.727)   (0.788)   (0.803)  
+unemployment   -1.891*** -1.618*** -1.101*** -2.323***
+               (0.109)   (0.088)   (0.142)   (0.115)  
+population     -0.023*** -0.024*** -0.034*** -0.029***
+               (0.001)   (0.002)   (0.002)   (0.002)  
+R-squared      0.148     0.165     0.142     0.229    
+R-squared Adj. 0.148     0.165     0.141     0.229    
+N              3114      3114      3115      3114     
+======================================================
+Standard errors in parentheses.
+* p<.1, ** p<.05, ***p<.01
+This table is pretty informative. Using what we learned from last week, we can say that for the 2020 election,
+
+A 1% increase in the unemployment rate was associated with a 2.3% decrease in republican voteshare.
+A 1000-person increase in population was associated with 0.029% decrease in republican voteshare.
+both of these results are statistically signifiant at the 0.01 level.
+23% of the variation in republican voteshare can be explained by unemployment and population.
+Crucially, "increase" in this context pertains to differences in between counties!
+
+We can also compare these results across different elections. The coefficient for the unemployment variable in 2020 is over twice the size of the same coefficient in 2016! So it looks like actually unemployment and republican voteshare are negatively related, contrary to popular belief.
+
+But is this the whole story?
+
+Below, i've isolated West Virginia, one of the states with the highest unemployment rates in America. Instead of drawing a new regression line every year, i've drawn a new regression line for each county over the six elections.
+
+
+[ ]
+west_virginia=df_c[(df_c['state']==54)]
+sns.lmplot(data=west_virginia, x='unemployment', y='r_votes', ci=None, hue='county', height=10, legend=False, palette='husl', scatter_kws={'alpha':.3})
+
+Within a given county, an increase in the unemployment rate is associated with an increase in republican voteshare! This is where the second question comes in (variation within counties).
+
+We got away with doing a series of cross-sectional analyses (a new regression for each election) because we have over 3000 counties, so n>3000 for each of those regressions (though even so, we're still splitting our data up and it would be better to leverage the full dataset of >18000 observations in one regression). It also provides relatively useful information about the importance of unemployment across the country for each election. We can't really apply the same thinking to this situation, since we only have six time periods. If we ran a separate regression for each county, we would only have six observations per regression-- nowhere near enough to satisfy the central limit theorem (at least n>30). The insights would also be of limited utility; we would get over 3000 unique estimates for the realtionship between county-level employment and election results. Imagine trying to fit that into one table.
+
+Luckily, there's a way of modeling this relationship that allows us to account for differences in between counties, while also capturing the variation within counties. This is called a Fixed Effect regression
+
+Fixed Effects Models: In experimental research, unmeasured differences between subjects are often controlled for via random assignment to treatment and control groups. Hence, even if a variable like Socio-Economic Status is not explicitly measured, because of random assignment, we can be reasonably confident that the effects of SES are approximately equal for all groups. Of course, random assignment is usually not possible with most survey research. If we want to control for the effect of a variable, we must explicitly measure it. If we don’t measure it, we can’t control for it. In practice, there will almost certainly be some variables we have failed to measure (or have measured poorly), so our models will likely suffer from some degree of omitted variable bias. When we have panel data (the same people/states/counties. etc. measured at two or more points in time) another alternative presents itself: we can use the subjects as their own controls. With panel data we can control for stable characteristics (i.e. characteristics that do not change across time) whether they are measured or not. These include such things as sex, race, and ethnicity for individuals, or urban/rural, topography, economic structure for geographic areas. The idea is that, whatever effect these variables have at one point in time, they will have the same effect at a different point in time because the values of such variables do not change.
+
+A fixed effect regression takes the following form:
+
+Yit=αi+βXit+ϵit
+
+Where:
+
+Xit are the independent variables (e.g. population and unemployment) whose values vary over time.
+β is the slope coefficient for variable x (e.g. unemployment). The model assumes that these effects are time-invariant, e.g. the effect of x is the same at same 1 as it is at time 4 (although the value of x can be different at different time periods).
+αi and ϵit are both error terms. ϵit is different for each individual at each point in time. αi only varies across individuals but not across time. We can think of αi as representing the effects of all the time invariant/stable variables that have NOT been included in the model. So, given that we have 6 time periods for each county then the six records for county 1 would all have the same value for α1, the six records for county 2 would all have the same value for α2, etc. But, ϵit is free to be different for every case at every time period.
+A fixed effect regression allows us to account for αi through a technique called demeaning
+
+Demeaning: After demeaning, all variables for all cases have a mean of 0. That means that all the between-subject variability has been eliminated. All that is left is the within-subject variability. So, with a fixed effects model, we are analyzing what causes individual’s values to change across time. Variables whose values do not change (like race or gender) cannot cause changes across time (unless their effects change across time as well). However, whatever effect they have at one time is the same effect that they have at other times, so the effects of such stable characteristics are controlled.
+
+In essence, you can picture this as allowing you to draw a separate regression line through each set of observations from the same group in your data (in this case, one county over time); however, while the intercept of these lines can vary (their absolute position), they will all have the same slope and will therefore be parallel. This is important, as we want to find one slope-- one common effect of x-- that fits all groups.
+
+Run the command below to install the library.
+
+
+[ ]
+!pip install linearmodels
+Collecting linearmodels
+  Downloading linearmodels-6.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl.metadata (7.9 kB)
+Requirement already satisfied: numpy<3,>=1.22.3 in /usr/local/lib/python3.10/dist-packages (from linearmodels) (1.26.4)
+Requirement already satisfied: pandas>=1.4.0 in /usr/local/lib/python3.10/dist-packages (from linearmodels) (2.2.2)
+Requirement already satisfied: scipy>=1.8.0 in /usr/local/lib/python3.10/dist-packages (from linearmodels) (1.13.1)
+Requirement already satisfied: statsmodels>=0.13.0 in /usr/local/lib/python3.10/dist-packages (from linearmodels) (0.14.4)
+Collecting mypy-extensions>=0.4 (from linearmodels)
+  Downloading mypy_extensions-1.0.0-py3-none-any.whl.metadata (1.1 kB)
+Requirement already satisfied: Cython>=3.0.10 in /usr/local/lib/python3.10/dist-packages (from linearmodels) (3.0.11)
+Collecting pyhdfe>=0.1 (from linearmodels)
+  Downloading pyhdfe-0.2.0-py3-none-any.whl.metadata (4.0 kB)
+Collecting formulaic>=1.0.0 (from linearmodels)
+  Downloading formulaic-1.1.0-py3-none-any.whl.metadata (6.9 kB)
+Collecting setuptools-scm<9.0.0,>=8.0.0 (from setuptools-scm[toml]<9.0.0,>=8.0.0->linearmodels)
+  Downloading setuptools_scm-8.1.0-py3-none-any.whl.metadata (6.6 kB)
+Collecting interface-meta>=1.2.0 (from formulaic>=1.0.0->linearmodels)
+  Downloading interface_meta-1.3.0-py3-none-any.whl.metadata (6.7 kB)
+Requirement already satisfied: typing-extensions>=4.2.0 in /usr/local/lib/python3.10/dist-packages (from formulaic>=1.0.0->linearmodels) (4.12.2)
+Requirement already satisfied: wrapt>=1.0 in /usr/local/lib/python3.10/dist-packages (from formulaic>=1.0.0->linearmodels) (1.17.0)
+Requirement already satisfied: python-dateutil>=2.8.2 in /usr/local/lib/python3.10/dist-packages (from pandas>=1.4.0->linearmodels) (2.8.2)
+Requirement already satisfied: pytz>=2020.1 in /usr/local/lib/python3.10/dist-packages (from pandas>=1.4.0->linearmodels) (2024.2)
+Requirement already satisfied: tzdata>=2022.7 in /usr/local/lib/python3.10/dist-packages (from pandas>=1.4.0->linearmodels) (2024.2)
+Requirement already satisfied: packaging>=20 in /usr/local/lib/python3.10/dist-packages (from setuptools-scm<9.0.0,>=8.0.0->setuptools-scm[toml]<9.0.0,>=8.0.0->linearmodels) (24.2)
+Requirement already satisfied: setuptools in /usr/local/lib/python3.10/dist-packages (from setuptools-scm<9.0.0,>=8.0.0->setuptools-scm[toml]<9.0.0,>=8.0.0->linearmodels) (75.1.0)
+Requirement already satisfied: tomli>=1 in /usr/local/lib/python3.10/dist-packages (from setuptools-scm<9.0.0,>=8.0.0->setuptools-scm[toml]<9.0.0,>=8.0.0->linearmodels) (2.2.1)
+Requirement already satisfied: patsy>=0.5.6 in /usr/local/lib/python3.10/dist-packages (from statsmodels>=0.13.0->linearmodels) (1.0.1)
+Requirement already satisfied: six>=1.5 in /usr/local/lib/python3.10/dist-packages (from python-dateutil>=2.8.2->pandas>=1.4.0->linearmodels) (1.17.0)
+Downloading linearmodels-6.1-cp310-cp310-manylinux_2_17_x86_64.manylinux2014_x86_64.whl (1.7 MB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 1.7/1.7 MB 27.3 MB/s eta 0:00:00
+Downloading formulaic-1.1.0-py3-none-any.whl (115 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 115.7/115.7 kB 8.1 MB/s eta 0:00:00
+Downloading mypy_extensions-1.0.0-py3-none-any.whl (4.7 kB)
+Downloading pyhdfe-0.2.0-py3-none-any.whl (19 kB)
+Downloading setuptools_scm-8.1.0-py3-none-any.whl (43 kB)
+   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━ 43.7/43.7 kB 3.0 MB/s eta 0:00:00
+Downloading interface_meta-1.3.0-py3-none-any.whl (14 kB)
+Installing collected packages: setuptools-scm, mypy-extensions, interface-meta, pyhdfe, formulaic, linearmodels
+Successfully installed formulaic-1.1.0 interface-meta-1.3.0 linearmodels-6.1 mypy-extensions-1.0.0 pyhdfe-0.2.0 setuptools-scm-8.1.0
+
+[ ]
+from linearmodels import PanelOLS
+from linearmodels import RandomEffects
+import statsmodels.formula.api as smf
+from linearmodels.panel import compare
+
+df_c=df_c.set_index(['county_fips','year']) # set the index to the county fips code and the year
+panel = PanelOLS.from_formula('r_votes ~ 1  + population + unemployment  + EntityEffects',df_c).fit() # run a fixed effects model
+print(compare({'Fixed Effects': panel,}, stars=True)) # print the model formatted as a regression table
+           Model Comparison           
+======================================
+                         Fixed Effects
+--------------------------------------
+Dep. Variable                  r_votes
+Estimator                     PanelOLS
+No. Observations                 12457
+Cov. Est.                   Unadjusted
+R-squared                       0.0206
+R-Squared (Within)              0.0206
+R-Squared (Between)            -0.1061
+R-Squared (Overall)            -0.0939
+F-statistic                     98.465
+P-value (F-stat)                0.0000
+=====================     ============
+Intercept                    66.818***
+                              (159.05)
+population                  -0.0727***
+                             (-10.241)
+unemployment                -0.3268***
+                             (-9.3595)
+======================= ==============
+Effects                         Entity
+--------------------------------------
+
+T-stats reported in parentheses
+When accounting for time-invariant differences between counties, the effect of population remains negative. This suggests that counties in which the population is decreasing tend to experience an increase in republican voteshare. More specifically, for every 1000 people that leave a county, republican voteshare increases by 0.06%.
+
+The really interesting part of this regression table, however, is the coefficient on the unemployment variable, which is now positive. This suggests that-- once we account for the differences between counties-- an increase in the unemployment rate within a county is positively associated with republican voteshare. Indeed, a 1% increase in the unemployment rate leads to a 0.28% increase in republican voteshare.
+
+This regression output even gives us three separate R2 values-- one for between-variation, another for within, and one overall.
+
+2. Difference in Differences
+One of the reasons that we observe a signficant relationship between unemployment and voting behaviour in last week's workshop is that the Republican and Democratic parties have opposing views on what to do about unemployment. Democratic lawmakers have historically been in favour of increasing the minimum wage to benefit low-income workers, while Republicans have generally opposed this on the basis that it would hurt these very workers by increase unemployment. Indeed, classical economic theory holds that an increase in wages would lead to a reduction in employment; A business that makes $100k in revenue per year and spends all of it on employing 20 people can't suddenly start paying their workers double their salaries-- unless it fires half of its workers. This is obviously a simplified model though-- minimum wage laws typically don't double wages, and businesses don't operate at-cost, they turn a profit which they could use to pay their workers more. In the rest of this workshop, we're going to be investigating this question empirically:
+
+Do minimum wage laws increase unemployment?
+Note that this is a causal question; i'm not asking if they're correlated-- i'm asking if one causes the other. The burden of proof here is much higher than observing correlations, and we have to think seriously about endogeneity. In partiuclar, we need to account for the influence of omitted variables (e.g. a recession, or the economic composition of a state), the potential for reverse causality (states implementing minimum wage laws in response to unemployment crises), and selection bias.
+
+In a lab, you can conduct causal inference by running an experiment. You can randomly select individuals, split them into a control group and a treatment group, measure their values in an outcome variable prior to a treatment, administer a treatment, and measure their respective values after the treatment. If you observe a change in the outcome variable in the treatment group after having administered the treatment, you can interpert that as the causal effect of treatment. This is because we're able to make a plausible argument that the control group can act as a counterfactual (a stand-in) for the treatment group in the absence of treatment. Both groups had the same values before the treatment, then the only thing that changed between them was the treatment, so if we observe a change in the outcome variable, it must be due to treatment.
+
+In the real world, we rarely get to run expermients of this kind. Instead, we have to hunt for natural experiments: situations in which there is a treatment which we're interested in measuring the effect of, and two groups that can plausibly act as a treatment and control group.
+
+Difference in Difference is a quasi-experimental design that makes use of longitudinal data from treatment and control groups to obtain an appropriate counterfactual to estimate a causal effect. DID is typically used to estimate the effect of a specific intervention or treatment (such as a passage of law, enactment of policy, or large-scale program implementation) by comparing the changes in outcomes over time between a population that is enrolled in a program (the intervention group) and a population that is not (the control group).
+
+The Difference in Difference model can be estimated as a simple regression model of the following form:
+
+Yit=β0+β1Treatmenti+β2Postt+β3(Treatmenti×Postt)+εit
+
+Treatmenti is 0 for the control group and 1 for the treatment group
+Postt is 0 for before and 1 for after
+we can insert the values of Treatment and Post using the table below and see that coefficient (β3) of the interaction of Treatment and Post is the Difference in Differences (DID) estimator:
+
+Card and Krueger (1994) found one such natural experiment, allowing them to estimate the causal effect of an increase in the state minimum wage on unemployment using a DiD model; In 1992, New Jersey raised the state minimum wage from 4.25to5.05 while the minimum wage in neighbouring Pennsylvania stayed the same at $4.25.
+
+Treatmeng Group: New Jersey
+Control Group: Pennsylvania
+Pre-Treatment Period: before 1992
+Post-Treatment Period: after 1992
+They conducted a survey of 384 fast-food restaurants across both states, right before and right after the law came into effect in New Jersey, asking them how many people they employed. They ran a Difference-in-Differences model, and found that the coefficient β3 was positive but not statistically significant. In other words, the average total employees per restaurant increased after the minimum wage increased, but this could have been due to random chance.
+
+That was a long time ago. Things have changed since then, including the fact that we have access to a lot more data and computational power. Let's see if we can replicate Card and Krueger's results with more recent data. I've downloaded data on unemployment, minimum wage levels, and Gross Domestic Product at the state level going back to 1976. Let's have a look at minimum wages in New Jersey and Pennsylvania over time:
+
+
+[ ]
+df_s=pd.read_csv('https://storage.googleapis.com/qm2/wk10/state_data.csv', parse_dates=['date']) # read in the state-level data
+did=df_s[df_s['state'].isin(['pennsylvania', 'new jersey'])] # subset the data to only include pennsylvania and new jersey
+
+px.line(did, x='date', y='minwage', color='state', title="Minimum Wages in New Jersey and Pennsylvania") # plot the minimum wage over time
+
+The plot above sort of looks like a set of descending staircases; this is for two reasons. The plateaus exist because each row in the dataframe df_s is the value of a state in a given month, but we only have minimum wage data for every year. So we get 12 consecutive values of minimum wage every year. The reason that the staircases are descending is because these minimum wages are adjusted for inflation. No matter where you're from, you've probably heard a grandparent say something along the lines of "My parents would send me to the shops with 25 cents to buy groceries for the week", but now it costs £9 for a bag of chips. That's inflation-- every year things tend to get slightly more expensive, so if the same absolute minimum wage actually diminishes in "real" terms, which is what the variable minwage measures. Incidentally, this is one of the main reasons University staff have been on strike. Anyway. Back to minimum wages.
+
+This plot shows that for the past fifty years, New Jersey and Pennsylvania have had largely similar minimum wage policies. There have been a couple moments of divergence, including in the 1990s when the Card and Krueger study was conducted. However, the biggest divergence actually started taking place in 2014 when New Jersey seems to have begun taking a wildly different approach. While Pennsylvania has had the same minimum wage since 2008 (and therefore seen a decline in inflation-adjusted wages), New Jersey has raised the minimum wage significantly twice. In 2020, New Jersey's minimum wage was around 50% higher than Pennsylvania's. We can exploit the fact that these two states have historically had similar minimum wage laws but have recently experienced a big divergence to see if that change in minimum wages has resulted in a change in employment levels.
+
+Our Difference-in-Differences setup is as follows:
+
+Unemploymentstate,year=β0+β1Treatmentstate+β2Postyear+β3(Treatmentstate×Postyear)+β4GDPstate,year+εit
+
+New Jersey is the treatment group
+Pennsylvania is the control group
+Years before 2014 is the pre-treatment period
+Years after 2014 is the post-treatment period
+
+[ ]
+did['post']=np.where(did['date']>='2014-01-01',1,0) # create a variable that is 1 if the date is after the minimum wage increase and 0 otherwise
+did['treatment']=np.where(did['state']=='new jersey',1,0) # create a variable that is 1 if the state is new jersey (i.e., the treatment group) and 0 for pennsylvania (the control group)
+did['post_treatment']=did['post']*did['treatment'] # create a variable that is 1 if the date is after the minimum wage increase and the state is new jersey and 0 otherwise
+Before we proceed with the analysis, though, we need to satisfy two assumptions that will allow us to argue that Pennsylvania can act as a valid control group for New Jersey:
+
+No simultaneous treatments:
+If, for example, New Jersey suddenly entered a massive recession in 2014 as well, we couldn't really argue that resulting effects on employment are due solely to the minimum wage law. To account for this, we'll be including state-level GDP as an additional independent variable in our DiD model.
+Parallel Trends:
+Both states have to have been experiencing similar trends in the dependent variable (unemployment) prior to the treatment (minimum wage law). If they were trending in opposite directions for unobserved reasons, ensuing differences in unemployment may be due to those unobserved reasons rather than the treatment.
+We can check this by plotting the dependent variable for both groups over time, and indicating the timing of the treatment.
+
+[ ]
+did=did[(did['date']>='2008-01-01') & (did['date']<='2020-01-01')]
+sns.lineplot(data=did,x='date',y='unemployment',hue='state')
+plt.axvline(pd.to_datetime('2014-01-01'),color='black',linestyle='dashed', label='NJ Minimum Wage Increase')
+plt.title('Unemployment in Pennsylvania and New Jersey')
+plt.legend()
+
+This plot shows a big spike in unemployment occurring for both Pennsylvania and New Jersey as a result of the 2008 financial crisis. New jersey had a higher unemployment rate than Pennsylvania, but their trends are largely parallel and decreasing after 2012. In the years following the minimum wage law, New Jersey's unemployment rate actually dips below Pennsylvania's for the first time in years. Let's look at this in the form of boxplots:
+
+
+[ ]
+did['category']=did['treatment'].astype(str)+did['post'].astype(str) # this variable is just for the plot below
+sns.boxplot(x='category', y='unemployment', hue='treatment', data=did).set_xticklabels(["Pre x Treatment", "Pre x Control",'Post x Treatment','Post x Control'])
+plt.xlabel('')
+plt.title('Unemployment Rates by Treatment and Post Treatment')
+plt.show()
+
+This plot is fascinating in and of itself. The two box plots on the left show the unemployment values of the counties prior to the minimum wage law in 2014, while the two on the right show their values after the minimum wage increases. Pennsylvania (the "control" group) is colored in blue, and New Jersey (the "treatment" group) is colored orange. Prior to the minimum wage increase in 2014, Pennsylvania (blue) has a lower unemployment rate than New Jersey (orange). In the years following New Jersey's passage of the minimum wage law, New Jersey actually has a lower unemployment rate than Pennsylvania! This is the only boxplot where the "treatment" (a minimum wage law) is being applied, and it has the lowest unemployment rate.
+
+Let's see if this difference is statistically signfiicant, and calculate a treatment effect:
+
+
+[ ]
+did_model = ols('unemployment ~  post + treatment + post_treatment', did).fit()
+print(did_model.summary())
+                            OLS Regression Results                            
+==============================================================================
+Dep. Variable:           unemployment   R-squared:                       0.659
+Model:                            OLS   Adj. R-squared:                  0.655
+Method:                 Least Squares   F-statistic:                     184.3
+Date:                Tue, 17 Dec 2024   Prob (F-statistic):           1.66e-66
+Time:                        18:43:07   Log-Likelihood:                -440.98
+No. Observations:                 290   AIC:                             890.0
+Df Residuals:                     286   BIC:                             904.6
+Df Model:                           3                                         
+Covariance Type:            nonrobust                                         
+==================================================================================
+                     coef    std err          t      P>|t|      [0.025      0.975]
+----------------------------------------------------------------------------------
+Intercept          7.3319      0.131     55.810      0.000       7.073       7.591
+post              -2.2443      0.185    -12.121      0.000      -2.609      -1.880
+treatment          1.1972      0.186      6.444      0.000       0.832       1.563
+post_treatment    -1.4232      0.262     -5.435      0.000      -1.939      -0.908
+==============================================================================
+Omnibus:                       54.329   Durbin-Watson:                   0.316
+Prob(Omnibus):                  0.000   Jarque-Bera (JB):               89.043
+Skew:                          -1.068   Prob(JB):                     4.62e-20
+Kurtosis:                       4.675   Cond. No.                         6.88
+==============================================================================
+
+Notes:
+[1] Standard Errors assume that the covariance matrix of the errors is correctly specified.
+There are some really interesting results from this model-- let's interpret the coefficients one by one.
+
+gdp: GDP is inversely related to unemployment. This makes sense: GDP basically measures the total amount of economic activity, so more economic activity = more employment.
+post: this coefficient is negative, but statistically insignificant at the 0.05 level; it indicates that unemployment generally decreased for both groups, but that this could be due to random chance.
+treatment: again negative but insignficant, meaning that there is no significant difference in unemployment levels between NJ and PA over the entire period.
+post_treatment: this is our difference-in-differences estimator, and reflects the causal effect of treatment. It is negative and statistically significant. If we believe that the asusmptions of our model are satisfied, we can claim that:
+The introduction of a minimum wage in New Jersey led to a 1.95% decrease in unemployment relative to Pennsylvania
+This is a bold claim. We should do our best to back it up. Notice that i've sort of arbitrarily chosen a window of dates around the minimum wage law-- maybe this result is a fluke, due to the timespan ive chosen.
+
+To address this concern, I'll run the same model 10 times, starting with a really small time window-- just one year on either side of the law-- and progressively expand it.
+
+
+[ ]
+models=[] # create empty list to store the models
+names=[] # create empty list to store the names of the models
+
+for window in range(1,10): # loop through years from 2000 to 2020 in increments of 4
+    did=df_s[(df_s['date']>=str(2014-window)+'-01-01') & (df_s['date']<=str(2014+window)+'-01-01') & df_s['state'].isin(['pennsylvania', 'new jersey'])] # subset the data within the window of interest around 2014
+    did['post']=np.where(did['date']>='2014-01-01',1,0) # create a dummy variable indicating the period after the minimum wage increase
+    did['treatment']=np.where(did['state']=='new jersey',1,0) # create a dummy variable for treatment
+    did['post_treatment']=did['post']*did['treatment'] # create an interaction term between the post and treatment variables
+    did_model = ols('unemployment ~ gdp+ post + treatment + post_treatment', did).fit() # run the difference in difference model
+
+    models.append(did_model) # append the model to the list of models
+    names.append('± '+str(window)+' Year') # append the name of the model to the list of names
+
+table=summary_col( # create a regression table
+    models, # pass the models to the summary_col function
+    stars=True, # add stars denoting the p-values of the coefficient to the table; * p<0.05, ** p<0.01, *** p<0.001
+    float_format='%0.3f', # set the decimal places to 3
+    model_names=names, # set the names of the model
+    info_dict = {"N":lambda x: "{0:d}".format(int(x.nobs))}) # add the number of observations to the table
+
+print(table) # print the table
+
+
+=======================================================================================================
+               ± 1 Year  ± 2 Year  ± 3 Year  ± 4 Year  ± 5 Year  ± 6 Year  ± 7 Year  ± 8 Year  ± 9 Year
+-------------------------------------------------------------------------------------------------------
+Intercept      21.423** 33.130*** 24.228*** 22.751*** 19.711*** 15.651*** 2.327     -0.580    -2.340*  
+               (9.399)  (2.324)   (1.333)   (0.876)   (0.746)   (1.277)   (2.183)   (1.579)   (1.398)  
+gdp            -0.000   -0.000*** -0.000*** -0.000*** -0.000*** -0.000*** 0.000**   0.000***  0.000*** 
+               (0.000)  (0.000)   (0.000)   (0.000)   (0.000)   (0.000)   (0.000)   (0.000)   (0.000)  
+post           -0.619   0.100     -0.262    -0.256*   -0.483*** -0.585*   -2.277*** -2.792*** -3.205***
+               (0.411)  (0.194)   (0.162)   (0.140)   (0.154)   (0.307)   (0.576)   (0.501)   (0.479)  
+treatment      -1.604   -3.686*** -1.850*** -1.466*** -0.903*** -0.364    1.825***  2.139***  2.241*** 
+               (1.896)  (0.479)   (0.285)   (0.190)   (0.169)   (0.295)   (0.509)   (0.402)   (0.363)  
+post_treatment -0.837** -1.707*** -1.848*** -2.108*** -2.111*** -1.953*** -0.780*   -0.375    -0.030   
+               (0.323)  (0.158)   (0.134)   (0.115)   (0.130)   (0.258)   (0.469)   (0.426)   (0.409)  
+R-squared      0.856    0.934     0.938     0.952     0.933     0.704     0.194     0.167     0.165    
+R-squared Adj. 0.844    0.931     0.936     0.951     0.932     0.699     0.184     0.158     0.157    
+N              50       98        146       194       242       290       338       384       408      
+=======================================================================================================
+Standard errors in parentheses.
+* p<.1, ** p<.05, ***p<.01
+The row we're mainly interested in is the post_treatment coefficient, the treatment effect. It remains significant and negative in all time periods smaller than 8 years, after which point it becomes insignificant;
+
+How do you think this affects our conclusion?
+
+Assessed Question
+Now we've got evidence that minimum wage laws may actually decrease unemployment in the case of New Jersey and Pennsylvania. But we've got quite a bit of data, and minimum wages change frequently. Let's find another example where we may be able to run a difference in differences regression to see if this trend holds in a different context.
+
+Below, I've picked out Arizona and Louisiana; they had nearly the exact same minimum wage for seven years, but in 2007 Arizona nearly tripled its minimum wage while Louisiana kept it the same (...by not having one).
+
+
+[ ]
+did2=df_s[(df_s['state'].isin(['arizona', 'louisiana']))&(df_s['date']>='2000')& (df_s['date']<'2010')]
+px.line(did2, x='date', y='minwage', color='state', title="Minimum Wages in Kansas and Ohio")
+
+Run a difference in differences regression to measure the effect of this minimum wage increase on unemployment. Define three variables (post, treatment, post_treatment), and include just these three variables in the model.
+
+Part A: What is the effect of the minimum wage increase on unemployment in the case of Arizona and Louisiana?
+Part B: Difference in Differences designs have two assumptions: parallel trends, and no simultaneous treatment. Can you think of any events that ocurred in 2008 that might violate the "no simultaneous treatment" assumption?
